@@ -11,30 +11,31 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <assert.h>
+
 // 最大用户数量
 #define USER_LIMIT 5
 // 读缓冲区大小
-#define BUFFER_SIZE 64
+#define BUFFER_SIZE 128
 // 文件描述符数量限制
 #define FD_LIMIT 65535
 
 /* 客户数据：
     客户端socket地址
-    待写到客户端的数据得到位置
+    待写到客户端的数据
     从客户端读入的数据
  */
-// void err_exit(const char *str, int errn)
-// {
-//     perror(str);
-//     exit(errn);
-// }
-
 struct client_data
 {
     struct sockaddr_in address;
     char *write_buf;
     char buf[BUFFER_SIZE];
 };
+
+void err_exit(const char *str, int errn)
+{
+    perror(str);
+    exit(errn);
+}
 
 int setnonblocking(int fd)
 {
@@ -62,12 +63,18 @@ int main(int argc, char *argv[])
     server_address.sin_port = htons(port);
 
     int listenfd = socket(AF_INET, SOCK_STREAM, 0);
-    assert(listenfd >= 0);
+    if(listenfd < 0)
+        err_exit("listen", 1);
+
     ret = bind(listenfd, (struct sockaddr*)&server_address, sizeof(server_address));
-    assert(ret != -1);
+    if(ret == -1)
+        err_exit("bind", 1);
+    
 
     ret = listen(listenfd, 5);
-    assert(ret != -1);
+    if(ret == -1)
+        err_exit("listen", 1);
+    
 
     /* 创建users数组，分配FD_LIMIT个client_data对象
         可以预期每个可能的socket连接都可以获得一个这样的对象，并且socket的值可以直接用来索引(作为数组的下标)socket连接
@@ -88,6 +95,7 @@ int main(int argc, char *argv[])
 
     while (1)
     {
+        // 阻塞等
         ret = poll(fds, user_counter + 1, -1);
         if(ret < 0)
         {
@@ -96,6 +104,7 @@ int main(int argc, char *argv[])
         }
         for(int i = 0; i < user_counter + 1; ++i)
         {
+            // 监听到有新的连接请求
             if((fds[i].fd == listenfd) && (fds[i].revents & POLLIN))
             {
                 struct sockaddr_in client_address;
@@ -104,7 +113,7 @@ int main(int argc, char *argv[])
                 if(connfd < 0)
                 {
                     printf("errno is %d\n", errno);
-                    perror("connect");
+                    // perror("accept in while");
                     continue;
                 }
 
@@ -127,6 +136,7 @@ int main(int argc, char *argv[])
                 fds[user_counter].revents = 0;
                 printf("comes a new user, now have %d users\n", user_counter);
             }
+            // 监听到有错误发生
             else if(fds[i].revents & POLLERR)
             {
                 printf("get an error from %d\n", fds[i].fd);
@@ -137,24 +147,27 @@ int main(int argc, char *argv[])
                 {
                     printf("get socket option failed\n");
                 }
+                printf("sockerr is %s\n", errors);
                 continue;
             }
+            // 监听到客户端关闭
             else if(fds[i].revents & POLLRDHUP)
             {
                 /* 如果客户端关闭连接，则服务器也关闭对应的连接，并将用户总数减1  */
                 users[fds[i].fd] = users[fds[user_counter].fd];
                 close(fds[i].fd);
-                fds[1] = fds[user_counter];
+                fds[i] = fds[user_counter];
                 i--;
                 user_counter--;
                 printf("a client left\n");
             }
+            // 监听到客户端写入数据
             else if(fds[i].revents & POLLIN)
             {
                 int connfd = fds[i].fd;
                 memset(users[connfd].buf, '\0', BUFFER_SIZE);
                 ret = recv(connfd, users[connfd].buf, BUFFER_SIZE-1, 0);
-                printf("get %d bytes of client data %s from %d\n", ret, users[connfd].buf, connfd);
+                printf("GET %d bytes from client[%d]: %s\n", ret, connfd, users[connfd].buf);
                 if(ret < 0)
                 {
                     /* 如果读操作出错，则关闭连接 */
@@ -184,6 +197,7 @@ int main(int argc, char *argv[])
                     }
                 }
             }
+            // 监听到客户端读数据的请求
             else if(fds[i].revents & POLLOUT)
             {
                 int connfd = fds[i].fd;
